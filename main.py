@@ -4,10 +4,9 @@ import time
 import telegram
 import asyncio
 from functools import partial
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,TQ_USERNAME,TQ_PASSWORD
 
-# Telegram配置
-TELEGRAM_BOT_TOKEN = '7173276947:AAEvtRbOH1DSM6t9aPUfmkjzYv-tXGbuaPA'  # 替换为你的bot token
-TELEGRAM_CHAT_ID = '438441299'      # 替换为你的chat id
+
 
 async def send_telegram_message(message):
     """发送Telegram消息"""
@@ -45,7 +44,7 @@ def check_ema_cross(api, symbol, kline_length=200):
 
 def monitor_contracts():
     """实时监控所有主力合约"""
-    api = TqApi(auth=TqAuth("碗米林2022", "superlk321235"))
+    api = TqApi(auth=TqAuth(TQ_USERNAME, TQ_PASSWORD))
     
     # 用于记录已经输出过确认信号的合约
     confirmed_signals = {}
