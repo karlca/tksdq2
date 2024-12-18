@@ -1,7 +1,18 @@
 from tqsdk2 import TqApi, TqAuth
 import pandas as pd
-import numpy as np
 import time
+import telegram
+import asyncio
+from functools import partial
+
+# Telegram配置
+TELEGRAM_BOT_TOKEN = '7173276947:AAEvtRbOH1DSM6t9aPUfmkjzYv-tXGbuaPA'  # 替换为你的bot token
+TELEGRAM_CHAT_ID = '438441299'      # 替换为你的chat id
+
+async def send_telegram_message(message):
+    """发送Telegram消息"""
+    bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
 
 def check_ema_cross(api, symbol, kline_length=200):
     """
@@ -39,6 +50,10 @@ def monitor_contracts():
     # 用于记录已经输出过确认信号的合约
     confirmed_signals = {}
     
+    # 创建异步事件循环
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     try:
         print("开始监控主力合约...")
         while True:
@@ -57,10 +72,18 @@ def monitor_contracts():
                     if symbol not in confirmed_signals or confirmed_signals[symbol] != cross_type:
                         confirmed_signals[symbol] = cross_type
                         current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-                        print(f"[{current_time}] 合约: {quote.underlying_symbol}, "
-                              f"状态: {status}, "
-                              f"当前价: {current_price:.2f}, "
-                              f"EMA200: {ema_value:.2f}")
+                        
+                        # 构建消息
+                        message = (f"[{current_time}] 合约: {quote.underlying_symbol}\n"
+                                 f"状态: {status}\n"
+                                 f"当前价: {current_price:.2f}\n"
+                                 f"EMA200: {ema_value:.2f}")
+                        
+                        # 打印到控制台
+                        print(message)
+                        
+                        # 发送到Telegram
+                        loop.run_until_complete(send_telegram_message(message))
             
             # 等待行情更新
             api.wait_update()
@@ -69,6 +92,7 @@ def monitor_contracts():
         print("\n监控已停止")
     finally:
         api.close()
+        loop.close()
 
 if __name__ == "__main__":
     monitor_contracts()
