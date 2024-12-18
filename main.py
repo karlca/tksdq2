@@ -73,8 +73,12 @@ def monitor_contracts():
                         confirmed_signals[symbol] = cross_type
                         current_time = time.strftime("%Y-%m-%d %H:%M:%S")
                         
+                        # 获取合约详细信息
+                        contract_quote = api.get_quote(quote.underlying_symbol)
+                        
                         # 构建消息
-                        message = (f"[{current_time}] 合约: {quote.underlying_symbol}\n"
+                        message = (f"[{current_time}]\n"
+                                 f"合约: {quote.underlying_symbol} ({contract_quote.instrument_name})\n"
                                  f"状态: {status}\n"
                                  f"当前价: {current_price:.2f}\n"
                                  f"EMA200: {ema_value:.2f}")
