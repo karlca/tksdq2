@@ -8,10 +8,21 @@ from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,TQ_USERNAME,TQ_PASSWORD
 
 
 
-async def send_telegram_message(message):
-    """发送Telegram消息"""
-    bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+async def send_telegram_message(message, max_retries=3):
+    """
+    发送Telegram消息，带重试机制
+    """
+    for attempt in range(max_retries):
+        try:
+            bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+            return True
+        except Exception as e:
+            if attempt == max_retries - 1:  # 最后一次尝试
+                print(f"Telegram发送失败 ({attempt + 1}/{max_retries}): {str(e)}")
+                return False
+            print(f"Telegram发送重试 ({attempt + 1}/{max_retries})")
+            await asyncio.sleep(2)  # 等待2秒后重试
 
 def check_ema_cross(api, symbol, kline_length=200):
     """
@@ -46,10 +57,7 @@ def monitor_contracts():
     """实时监控所有主力合约"""
     api = TqApi(auth=TqAuth(TQ_USERNAME, TQ_PASSWORD))
     
-    # 用于记录已经输出过确认信号的合约
     confirmed_signals = {}
-    
-    # 创建异步事件循环
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -58,37 +66,32 @@ def monitor_contracts():
         while True:
             main_contracts = api.query_quotes("KQ.m@")
             
-            # 检查每个合约的EMA穿越情况
             for symbol in main_contracts:
                 quote = api.get_quote(symbol)
                 cross_type, current_price, ema_value = check_ema_cross(api, quote.underlying_symbol)
                 
-                # 只处理确认的穿越信号
-                if abs(cross_type) == 1:  # 确认信号
+                if abs(cross_type) == 1:
                     status = "【确认】向上穿越" if cross_type == 1 else "【确认】向下穿越"
                     
-                    # 如果该合约没有记录或者记录的信号类型不同，则输出并更新记录
                     if symbol not in confirmed_signals or confirmed_signals[symbol] != cross_type:
                         confirmed_signals[symbol] = cross_type
                         current_time = time.strftime("%Y-%m-%d %H:%M:%S")
                         
-                        # 获取合约详细信息
                         contract_quote = api.get_quote(quote.underlying_symbol)
                         
-                        # 构建消息
                         message = (f"[{current_time}]\n"
                                  f"合约: {quote.underlying_symbol} ({contract_quote.instrument_name})\n"
                                  f"状态: {status}\n"
                                  f"当前价: {current_price:.2f}\n"
                                  f"EMA200: {ema_value:.2f}")
                         
-                        # 打印到控制台
                         print(message)
                         
-                        # 发送到Telegram
-                        loop.run_until_complete(send_telegram_message(message))
+                        # 发送到Telegram（带重试机制）
+                        success = loop.run_until_complete(send_telegram_message(message))
+                        if not success:
+                            print("消息发送失败，仅在控制台显示")
             
-            # 等待行情更新
             api.wait_update()
             
     except KeyboardInterrupt:
