@@ -36,16 +36,25 @@ def check_ema_cross(api, symbol, kline_length=200):
     df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
     
     # 获取最近的几根K线数据
-    last_k = df.iloc[-1]    # 最新K线
-    prev_k = df.iloc[-2]    # 前一根K线
-    prev_prev_k = df.iloc[-3]  # 前两根K线
+    last_k = df.iloc[-1]        # 最新K线
+    prev_k = df.iloc[-2]        # 前一根K线
+    prev_prev_k = df.iloc[-3]   # 前两根K线
+    prev_prev_prev_k = df.iloc[-4]  # 前三根K线
     
-    # 判断穿越确认
-    if prev_prev_k['close'] < prev_prev_k['ema200'] and prev_k['close'] > prev_k['ema200'] and last_k['close'] > last_k['ema200']:
+    # 判断穿越确认 (需要三根K线确认)
+    if (prev_prev_prev_k['close'] < prev_prev_prev_k['ema200'] and  # 第一根在均线下方
+        prev_prev_k['close'] > prev_prev_k['ema200'] and            # 第二根突破均线
+        prev_k['close'] > prev_k['ema200'] and                      # 第三根确认
+        last_k['close'] > last_k['ema200']):                        # 当前K线保持
         return 1, last_k['close'], last_k['ema200']  # 上穿确认
-    elif prev_prev_k['close'] > prev_prev_k['ema200'] and prev_k['close'] < prev_k['ema200'] and last_k['close'] < last_k['ema200']:
+    
+    elif (prev_prev_prev_k['close'] > prev_prev_prev_k['ema200'] and  # 第一根在均线上方
+          prev_prev_k['close'] < prev_prev_k['ema200'] and            # 第二根突破均线
+          prev_k['close'] < prev_k['ema200'] and                      # 第三根确认
+          last_k['close'] < last_k['ema200']):                        # 当前K线保持
         return -1, last_k['close'], last_k['ema200']  # 下穿确认
-    # 判断可能穿越（需要下一根K线确认）
+    
+    # 判断可能穿越（需要后续K线确认）
     elif prev_k['close'] < prev_k['ema200'] and last_k['close'] > last_k['ema200']:
         return 2, last_k['close'], last_k['ema200']  # 可能上穿
     elif prev_k['close'] > prev_k['ema200'] and last_k['close'] < last_k['ema200']:
