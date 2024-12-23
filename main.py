@@ -4,9 +4,8 @@ import time
 import telegram
 import asyncio
 from functools import partial
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,TQ_USERNAME,TQ_PASSWORD
-
-
+from datetime import datetime
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TQ_USERNAME, TQ_PASSWORD, EXCLUDED_CONTRACTS
 
 async def send_telegram_message(message, max_retries=3):
     """
@@ -24,88 +23,159 @@ async def send_telegram_message(message, max_retries=3):
             print(f"Telegram发送重试 ({attempt + 1}/{max_retries})")
             await asyncio.sleep(2)  # 等待2秒后重试
 
-def check_ema_cross(api, symbol, kline_length=200):
+def is_market_closed():
+    """检查是否是收盘时间（15:15）"""
+    current_time = datetime.now().time()
+    # 判断是否是 15:15
+    return current_time.hour == 15 and current_time.minute == 15
+
+def check_multi_ema_cross(api, symbol):
     """
-    检查指定合约的5分钟K线是否穿越EMA200
-    返回: 1(上穿确认), -1(下穿确认), 2(可能上穿), -2(可能下穿), 0(无穿越)
+    检查指定合约的5分钟K线是否同时穿越所有EMA均线
+    返回: (方向, 当前价格, 是否全部穿越)
+    方向: 1(上穿确认), -1(下穿确认), 0(无穿越)
     """
     klines = api.get_kline_serial(symbol, duration_seconds=5*60, data_length=300)
     df = pd.DataFrame(klines)
     
-    # 计算EMA200
-    df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
+    # 定义要监控的EMA周期列表
+    ema_periods = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 
+                  55, 60, 65, 70, 75, 80, 85, 90, 95, 100]
+    
+    # 计算所有EMA
+    for period in ema_periods:
+        df[f'ema{period}'] = df['close'].ewm(span=period, adjust=False).mean()
     
     # 获取最近的几根K线数据
-    last_k = df.iloc[-1]        # 最新K线
-    prev_k = df.iloc[-2]        # 前一根K线
+    last_k = df.iloc[-1]    # 最新K线
+    prev_k = df.iloc[-2]    # 前一根K线
     prev_prev_k = df.iloc[-3]   # 前两根K线
-    prev_prev_prev_k = df.iloc[-4]  # 前三根K线
     
-    # 判断穿越确认 (需要三根K线确认)
-    if (prev_prev_prev_k['close'] < prev_prev_prev_k['ema200'] and  # 第一根在均线下方
-        prev_prev_k['close'] > prev_prev_k['ema200'] and            # 第二根突破均线
-        prev_k['close'] > prev_k['ema200'] and                      # 第三根确认
-        last_k['close'] > last_k['ema200']):                        # 当前K线保持
-        return 1, last_k['close'], last_k['ema200']  # 上穿确认
+    # 检查是否所有均线都被穿越并得到第二根K线确认
+    up_cross_count = 0
+    down_cross_count = 0
     
-    elif (prev_prev_prev_k['close'] > prev_prev_prev_k['ema200'] and  # 第一根在均线上方
-          prev_prev_k['close'] < prev_prev_k['ema200'] and            # 第二根突破均线
-          prev_k['close'] < prev_k['ema200'] and                      # 第三根确认
-          last_k['close'] < last_k['ema200']):                        # 当前K线保持
-        return -1, last_k['close'], last_k['ema200']  # 下穿确认
+    for period in ema_periods:
+        ema_col = f'ema{period}'
+        # 向上穿越并得到确认
+        if (prev_prev_k['close'] < prev_prev_k[ema_col] and  # 第一根K线在均线下方
+            prev_k['close'] > prev_k[ema_col] and            # 第二根K线突破并确认
+            last_k['close'] > last_k[ema_col]):             # 当前K线保持在上方
+            up_cross_count += 1
+        # 向下穿越并得到确认
+        elif (prev_prev_k['close'] > prev_prev_k[ema_col] and  # 第一根K线在均线上方
+              prev_k['close'] < prev_k[ema_col] and            # 第二根K线突破并确认
+              last_k['close'] < last_k[ema_col]):             # 当前K线保持在下方
+            down_cross_count += 1
     
-    # 判断可能穿越（需要后续K线确认）
-    elif prev_k['close'] < prev_k['ema200'] and last_k['close'] > last_k['ema200']:
-        return 2, last_k['close'], last_k['ema200']  # 可能上穿
-    elif prev_k['close'] > prev_k['ema200'] and last_k['close'] < last_k['ema200']:
-        return -2, last_k['close'], last_k['ema200']  # 可能下穿
+    # 只有当所有均线都被穿越且得到确认时才返回信号
+    if up_cross_count == len(ema_periods):
+        return 1, last_k['close'], True
+    elif down_cross_count == len(ema_periods):
+        return -1, last_k['close'], True
     
-    return 0, last_k['close'], last_k['ema200']  # 无穿越
+    return 0, last_k['close'], False
+
+def generate_daily_report(signals_count):
+    """生成每日统计报告"""
+    report = ""
+    
+    # 按品种整理统计
+    for symbol, counts in signals_count.items():
+        report += f"品种: {symbol}\n"
+        report += f"上穿次数: {counts.get(1, 0)}\n"
+        report += f"下穿次数: {counts.get(-1, 0)}\n"
+        report += "-" * 20 + "\n"
+    
+    # 计算总计
+    total_up = sum(counts.get(1, 0) for counts in signals_count.values())
+    total_down = sum(counts.get(-1, 0) for counts in signals_count.values())
+    
+    report += "\n总计:\n"
+    report += f"总上穿次数: {total_up}\n"
+    report += f"总下穿次数: {total_down}\n"
+    
+    return report
 
 def monitor_contracts():
     """实时监控所有主力合约"""
     api = TqApi(auth=TqAuth(TQ_USERNAME, TQ_PASSWORD))
     
-    confirmed_signals = {}
+    alerted_crosses = {}  # 格式: {symbol: direction}
+    signals_count = {}  # 用于记录每个品种的穿越次数
+    last_report_time = None
+    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     try:
         print("开始监控主力合约...")
+        print(f"已排除以下合约: {', '.join(EXCLUDED_CONTRACTS)}")
+        
         while True:
+            current_time = datetime.now()
+            
+            # 检查是否需要发送日报（每天15:15发送一次）
+            if (is_market_closed() and 
+                (last_report_time is None or 
+                 current_time.date() != last_report_time.date())):
+                if signals_count:
+                    report = f"=== {current_time.strftime('%Y-%m-%d')} 交易日统计报告 ===\n\n"
+                    report += generate_daily_report(signals_count)
+                    print(report)
+                    loop.run_until_complete(send_telegram_message(report))
+                    signals_count = {}
+                    alerted_crosses = {}
+                last_report_time = current_time
+            
             main_contracts = api.query_quotes("KQ.m@")
             
             for symbol in main_contracts:
-                quote = api.get_quote(symbol)
-                cross_type, current_price, ema_value = check_ema_cross(api, quote.underlying_symbol)
-                
-                if abs(cross_type) == 1:
-                    status = "【确认】向上穿越" if cross_type == 1 else "【确认】向下穿越"
+                # 检查是否在排除列表中
+                if any(excluded in symbol for excluded in EXCLUDED_CONTRACTS):
+                    continue
                     
-                    if symbol not in confirmed_signals or confirmed_signals[symbol] != cross_type:
-                        confirmed_signals[symbol] = cross_type
-                        current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-                        
-                        contract_quote = api.get_quote(quote.underlying_symbol)
-                        
-                        message = (f"[{current_time}]\n"
-                                 f"合约: {quote.underlying_symbol} ({contract_quote.instrument_name})\n"
-                                 f"状态: {status}\n"
-                                 f"当前价: {current_price:.2f}\n"
-                                 f"EMA200: {ema_value:.2f}")
-                        
-                        print(message)
-                        
-                        # 发送到Telegram（带重试机制）
-                        success = loop.run_until_complete(send_telegram_message(message))
-                        if not success:
-                            print("消息发送失败，仅在控制台显示")
+                quote = api.get_quote(symbol)
+                cross_direction, current_price, all_crossed = check_multi_ema_cross(api, quote.underlying_symbol)
+                
+                # 只在同时穿越所有均线且未提醒过时发送信号
+                if (cross_direction != 0 and all_crossed and 
+                    (quote.underlying_symbol not in alerted_crosses or 
+                     alerted_crosses[quote.underlying_symbol] != cross_direction)):
+                    
+                    status = "【同时上穿所有均线】" if cross_direction == 1 else "【同时下穿所有均线】"
+                    
+                    # 记录这个方向的穿越已经提醒过
+                    alerted_crosses[quote.underlying_symbol] = cross_direction
+                    
+                    # 更新统计数据
+                    if quote.underlying_symbol not in signals_count:
+                        signals_count[quote.underlying_symbol] = {1: 0, -1: 0}
+                    signals_count[quote.underlying_symbol][cross_direction] += 1
+                    
+                    current_time_str = time.strftime("%Y-%m-%d %H:%M:%S")
+                    contract_quote = api.get_quote(quote.underlying_symbol)
+                    
+                    message = (f"[{current_time_str}]\n"
+                             f"合约: {quote.underlying_symbol} ({contract_quote.instrument_name})\n"
+                             f"状态: {status}\n"
+                             f"当前价: {current_price:.2f}")
+                    
+                    print(message)
+                    success = loop.run_until_complete(send_telegram_message(message))
+                    if not success:
+                        print("消息发送失败，仅在控制台显示")
             
             api.wait_update()
             
     except KeyboardInterrupt:
         print("\n监控已停止")
     finally:
+        if signals_count:
+            report = f"=== {current_time.strftime('%Y-%m-%d')} 最终统计报告 ===\n\n"
+            report += generate_daily_report(signals_count)
+            print(report)
+            loop.run_until_complete(send_telegram_message(report))
         api.close()
         loop.close()
 
