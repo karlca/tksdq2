@@ -5,7 +5,7 @@ import telegram
 import asyncio
 from functools import partial
 from datetime import datetime
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TQ_USERNAME, TQ_PASSWORD, EXCLUDED_CONTRACTS
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TQ_USERNAME, TQ_PASSWORD, EXCLUDED_CONTRACTS, WATCH_5MIN_CONTRACTS
 
 async def send_telegram_message(message, max_retries=3):
     """
@@ -68,7 +68,7 @@ def check_multi_ema_cross(api, symbol):
               last_k['close'] < last_k[ema_col]):             # 当前K线保持在下方
             down_cross_count += 1
     
-    # 只有当所有均线都被穿越且得到确认时才返回信号
+    # 只有当所有均线都���穿越且得到确认时才返回信号
     if up_cross_count == len(ema_periods):
         return 1, last_k['close'], True
     elif down_cross_count == len(ema_periods):
@@ -158,7 +158,8 @@ def monitor_contracts():
     
     try:
         print("开始监控主力合约...")
-        print(f"已排除以下合约: {', '.join(EXCLUDED_CONTRACTS)}")
+        print(f"已排除合约: {', '.join(EXCLUDED_CONTRACTS)}")
+        print(f"5分钟监控合约: {', '.join(WATCH_5MIN_CONTRACTS)}")
         
         while True:
             current_time = datetime.now()
@@ -184,44 +185,49 @@ def monitor_contracts():
                     continue
                     
                 quote = api.get_quote(symbol)
+                underlying_symbol = quote.underlying_symbol
                 
-                # 检查5分钟K线穿越
-                min5_cross, min5_price, min5_all_crossed = check_multi_ema_cross(api, quote.underlying_symbol)
-                # 检查日线穿越
-                daily_cross, daily_price, daily_all_crossed = check_daily_ema_cross(api, quote.underlying_symbol)
+                # 检查5分钟K线穿越（只检查指定合约）
+                if any(watch_symbol in underlying_symbol for watch_symbol in WATCH_5MIN_CONTRACTS):
+                    min5_cross, min5_price, min5_all_crossed = check_multi_ema_cross(api, underlying_symbol)
+                else:
+                    min5_cross, min5_price, min5_all_crossed = 0, 0, False
+                
+                # 检查日线穿越（检查所有合约）
+                daily_cross, daily_price, daily_all_crossed = check_daily_ema_cross(api, underlying_symbol)
                 
                 # 初始化该合约的记录
-                if quote.underlying_symbol not in alerted_crosses:
-                    alerted_crosses[quote.underlying_symbol] = {'5min': 0, 'daily': 0}
+                if underlying_symbol not in alerted_crosses:
+                    alerted_crosses[underlying_symbol] = {'5min': 0, 'daily': 0}
                 
-                # 处理5分钟信号
+                # 处理5分钟信号（只处理指定合约）
                 if (min5_cross != 0 and min5_all_crossed and 
-                    alerted_crosses[quote.underlying_symbol]['5min'] != min5_cross):
+                    alerted_crosses[underlying_symbol]['5min'] != min5_cross):
                     
                     status = "【5分钟同时上穿所有均线】" if min5_cross == 1 else "【5分钟同时下穿所有均线】"
-                    alerted_crosses[quote.underlying_symbol]['5min'] = min5_cross
+                    alerted_crosses[underlying_symbol]['5min'] = min5_cross
                     
-                    if quote.underlying_symbol not in signals_count:
-                        signals_count[quote.underlying_symbol] = {1: 0, -1: 0}
-                    signals_count[quote.underlying_symbol][min5_cross] += 1
+                    if underlying_symbol not in signals_count:
+                        signals_count[underlying_symbol] = {1: 0, -1: 0}
+                    signals_count[underlying_symbol][min5_cross] += 1
                     
                     message = (f"[{time.strftime('%Y-%m-%d %H:%M:%S')}]\n"
-                             f"合约: {quote.underlying_symbol} ({quote.instrument_name})\n"
+                             f"合约: {underlying_symbol} ({quote.instrument_name})\n"
                              f"状态: {status}\n"
                              f"当前价: {min5_price:.2f}")
                     
                     print(message)
                     loop.run_until_complete(send_telegram_message(message))
                 
-                # 处理日线信号
+                # 处理日线信号（处理所有合约）
                 if (daily_cross != 0 and daily_all_crossed and 
-                    alerted_crosses[quote.underlying_symbol]['daily'] != daily_cross):
+                    alerted_crosses[underlying_symbol]['daily'] != daily_cross):
                     
                     status = "【日线同时上穿所有均线】" if daily_cross == 1 else "【日线同时下穿所有均线】"
-                    alerted_crosses[quote.underlying_symbol]['daily'] = daily_cross
+                    alerted_crosses[underlying_symbol]['daily'] = daily_cross
                     
                     message = (f"[{time.strftime('%Y-%m-%d %H:%M:%S')}]\n"
-                             f"合约: {quote.underlying_symbol} ({quote.instrument_name})\n"
+                             f"合约: {underlying_symbol} ({quote.instrument_name})\n"
                              f"状态: {status}\n"
                              f"当前价: {daily_price:.2f}")
                     
